@@ -46,6 +46,10 @@ Thumbs.db
 output/
 *.csv
 
+# サンプルレシート画像（個人情報を含むため除外、README のみ追跡）
+samples/*
+!samples/README.md
+
 # ログファイル
 *.log
 
