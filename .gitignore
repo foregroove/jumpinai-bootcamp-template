@@ -46,6 +46,11 @@ Thumbs.db
 output/
 *.csv
 
+# サンプルレシート画像（受講者個人のレシートが配置される想定のため誤 push を防止）
+# README.md だけを追跡対象にする
+samples/*
+!samples/README.md
+
 # ログファイル
 *.log
 
