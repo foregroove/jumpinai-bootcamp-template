@@ -1,19 +1,39 @@
-"""レシート画像から経費CSVを生成するスクリプト（雛形）。
+"""レシート画像から経費CSVを生成するスクリプト。
 
-Jumpin' AI Bootcamp ハンズオン教材。Step 1 では CLI 引数受付・ファイル存在チェック・
-ロギング設定までを実装する。Vision API 呼び出しと CSV 出力は後続 Step で追加する。
+Jumpin' AI Bootcamp ハンズオン教材。
+Step 2 では Claude Vision API へレシート画像を投げ、抽出結果のテキストをログ出力する
+ところまでを実装する。JSON 構造化と CSV 出力は後続 Step で追加する。
 """
 
 from __future__ import annotations
 
+import base64
 import logging
+import os
 import sys
 from pathlib import Path
+
+from anthropic import Anthropic, APIError
+from dotenv import load_dotenv
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
+
+DEFAULT_MODEL = "claude-sonnet-4-6"
+MAX_TOKENS = 1024
+VISION_PROMPT = (
+    "このレシートから日付・店名・金額を読み取ってください。"
+    "日付はYYYY-MM-DD形式で。"
+)
+SUPPORTED_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 def parse_args(argv: list[str]) -> Path:
@@ -35,13 +55,13 @@ def parse_args(argv: list[str]) -> Path:
 
 
 def validate_image_path(image_path: Path) -> None:
-    """画像ファイルが存在することを確認する。
+    """画像ファイルが存在しサポート形式であることを確認する。
 
     Args:
         image_path: 検査対象の画像パス。
 
     Raises:
-        SystemExit: ファイルが存在しない、またはファイルでない場合に終了する。
+        SystemExit: ファイルが存在しない、ファイルでない、または未対応拡張子の場合。
     """
     if not image_path.exists():
         logging.error("画像ファイルが見つかりません: %s", image_path)
@@ -49,10 +69,106 @@ def validate_image_path(image_path: Path) -> None:
     if not image_path.is_file():
         logging.error("指定パスはファイルではありません: %s", image_path)
         raise SystemExit(1)
+    if image_path.suffix.lower() not in SUPPORTED_MEDIA_TYPES:
+        logging.error(
+            "未対応の画像形式です: %s（対応: %s）",
+            image_path.suffix,
+            ", ".join(sorted(SUPPORTED_MEDIA_TYPES)),
+        )
+        raise SystemExit(1)
+
+
+def load_api_key() -> str:
+    """``.env`` から ``ANTHROPIC_API_KEY`` を読み込む。
+
+    Returns:
+        Anthropic API キー文字列。
+
+    Raises:
+        SystemExit: APIキーが未設定または雛形のままの場合に終了する。
+    """
+    load_dotenv()
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key or api_key == "your_key_here":
+        logging.error(
+            "ANTHROPIC_API_KEY が設定されていません。.env を確認してください。"
+        )
+        raise SystemExit(1)
+    return api_key
+
+
+def encode_image(image_path: Path) -> tuple[str, str]:
+    """画像ファイルを base64 エンコードし、(media_type, data) を返す。
+
+    Args:
+        image_path: エンコード対象の画像パス。
+
+    Returns:
+        ``(media_type, base64文字列)`` のタプル。
+
+    Raises:
+        SystemExit: ファイル読み込みに失敗した場合。
+    """
+    media_type = SUPPORTED_MEDIA_TYPES[image_path.suffix.lower()]
+    try:
+        raw_bytes = image_path.read_bytes()
+    except OSError as exc:
+        logging.error("画像ファイルの読み込みに失敗しました: %s (%s)", image_path, exc)
+        raise SystemExit(1) from exc
+    encoded = base64.standard_b64encode(raw_bytes).decode("ascii")
+    return media_type, encoded
+
+
+def call_vision_api(api_key: str, media_type: str, image_b64: str) -> str:
+    """Claude Vision API を呼び出し、レスポンステキストを返す。
+
+    Args:
+        api_key: Anthropic API キー。
+        media_type: 画像の MIME タイプ（例: ``image/jpeg``）。
+        image_b64: base64 エンコード済み画像データ。
+
+    Returns:
+        モデルが返したテキスト本文。
+
+    Raises:
+        SystemExit: API 呼び出しに失敗した場合。
+    """
+    model = os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    client = Anthropic(api_key=api_key)
+    try:
+        message = client.messages.create(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": image_b64,
+                            },
+                        },
+                        {"type": "text", "text": VISION_PROMPT},
+                    ],
+                }
+            ],
+        )
+    except APIError as exc:
+        logging.error("Claude API 呼び出しに失敗しました: %s", exc)
+        raise SystemExit(1) from exc
+
+    text_parts = [block.text for block in message.content if getattr(block, "type", None) == "text"]
+    if not text_parts:
+        logging.error("API レスポンスにテキストが含まれていませんでした。")
+        raise SystemExit(1)
+    return "\n".join(text_parts)
 
 
 def main(argv: list[str]) -> int:
-    """エントリポイント。引数解釈と存在チェックを行う。
+    """エントリポイント。画像→API呼び出し→ログ出力までを実行する。
 
     Args:
         argv: ``sys.argv[1:]`` 相当の引数リスト。
@@ -63,7 +179,14 @@ def main(argv: list[str]) -> int:
     image_path = parse_args(argv)
     validate_image_path(image_path)
     logging.info("画像ファイルを受け付けました: %s", image_path)
-    # TODO: Step 2 以降で Vision API 呼び出し・JSON構造化・CSV 出力を追加する
+
+    api_key = load_api_key()
+    media_type, image_b64 = encode_image(image_path)
+    logging.info("Claude Vision API を呼び出します（media_type=%s）", media_type)
+
+    response_text = call_vision_api(api_key, media_type, image_b64)
+    logging.info("API レスポンス:\n%s", response_text)
+    # TODO: Step 3 で JSON 構造化、Step 4 で CSV 出力を追加する
     return 0
 
 
