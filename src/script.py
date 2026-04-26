@@ -1,8 +1,8 @@
 """レシート画像から経費CSVを生成するスクリプト。
 
 Jumpin' AI Bootcamp ハンズオン教材。
-Step 3 では Claude Vision API のレスポンスから JSON を抽出・パースし、
-日付・店名・金額・勘定科目を含む dict を返すところまでを実装する。CSV 出力は Step 4。
+レシート画像を Claude Vision API に投げて日付・店名・金額・勘定科目を抽出し、
+``output/expenses_YYYYMMDD_HHMMSS.csv`` として書き出す。
 """
 
 from __future__ import annotations
@@ -13,9 +13,11 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from anthropic import Anthropic, APIError
 from dotenv import load_dotenv
 
@@ -25,8 +27,16 @@ logging.basicConfig(
 )
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_OUTPUT_DIR = "output"
 MAX_TOKENS = 1024
 EXPENSE_CATEGORIES = ("会議費", "消耗品費", "旅費交通費", "新聞図書費", "雑費")
+CSV_COLUMNS = ("日付", "店名", "金額", "勘定科目")
+CSV_KEY_TO_COLUMN = {
+    "date": "日付",
+    "store": "店名",
+    "amount": "金額",
+    "category": "勘定科目",
+}
 VISION_PROMPT = (
     "このレシートから日付・店名・金額・勘定科目を読み取ってください。\n"
     "日付はYYYY-MM-DD形式で。\n"
@@ -234,6 +244,40 @@ def parse_receipt_json(response_text: str) -> dict[str, Any]:
     return data
 
 
+def write_csv(receipt: dict[str, Any]) -> Path:
+    """構造化済みレシート情報を CSV ファイルへ出力する。
+
+    Args:
+        receipt: ``date`` ``store`` ``amount`` ``category`` を含む dict。
+
+    Returns:
+        書き出した CSV ファイルのパス。
+
+    Raises:
+        SystemExit: ディレクトリ作成または書き込みに失敗した場合。
+    """
+    output_dir = Path(os.environ.get("OUTPUT_DIR", DEFAULT_OUTPUT_DIR).strip() or DEFAULT_OUTPUT_DIR)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logging.error("出力ディレクトリの作成に失敗しました: %s (%s)", output_dir, exc)
+        raise SystemExit(1) from exc
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = output_dir / f"expenses_{timestamp}.csv"
+
+    row = {column: receipt[key] for key, column in CSV_KEY_TO_COLUMN.items()}
+    dataframe = pd.DataFrame([row], columns=list(CSV_COLUMNS))
+
+    try:
+        dataframe.to_csv(output_path, index=False, encoding="utf-8")
+    except OSError as exc:
+        logging.error("CSV の書き込みに失敗しました: %s (%s)", output_path, exc)
+        raise SystemExit(1) from exc
+
+    return output_path
+
+
 def main(argv: list[str]) -> int:
     """エントリポイント。画像→API呼び出し→JSON構造化までを実行する。
 
@@ -256,7 +300,9 @@ def main(argv: list[str]) -> int:
 
     receipt = parse_receipt_json(response_text)
     logging.info("構造化結果: %s", receipt)
-    # TODO: Step 4 で CSV 出力を追加する
+
+    output_path = write_csv(receipt)
+    logging.info("CSV を出力しました: %s", output_path)
     return 0
 
 
