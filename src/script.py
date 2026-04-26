@@ -1,17 +1,20 @@
 """レシート画像から経費CSVを生成するスクリプト。
 
 Jumpin' AI Bootcamp ハンズオン教材。
-Step 2 では Claude Vision API へレシート画像を投げ、抽出結果のテキストをログ出力する
-ところまでを実装する。JSON 構造化と CSV 出力は後続 Step で追加する。
+Step 3 では Claude Vision API のレスポンスから JSON を抽出・パースし、
+日付・店名・金額・勘定科目を含む dict を返すところまでを実装する。CSV 出力は Step 4。
 """
 
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
+from typing import Any
 
 from anthropic import Anthropic, APIError
 from dotenv import load_dotenv
@@ -23,10 +26,18 @@ logging.basicConfig(
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 1024
+EXPENSE_CATEGORIES = ("会議費", "消耗品費", "旅費交通費", "新聞図書費", "雑費")
 VISION_PROMPT = (
-    "このレシートから日付・店名・金額を読み取ってください。"
-    "日付はYYYY-MM-DD形式で。"
+    "このレシートから日付・店名・金額・勘定科目を読み取ってください。\n"
+    "日付はYYYY-MM-DD形式で。\n"
+    "勘定科目は次の5分類のいずれかを必ず選んでください："
+    f"{'／'.join(EXPENSE_CATEGORIES)}\n"
+    "以下のJSONフォーマットで返してください（JSON以外の文章は出力しないこと）：\n"
+    '{"date": "YYYY-MM-DD", "store": "店名", "amount": 金額（整数）, '
+    '"category": "経費科目"}'
 )
+JSON_OBJECT_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
+REQUIRED_KEYS = ("date", "store", "amount", "category")
 SUPPORTED_MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -167,8 +178,64 @@ def call_vision_api(api_key: str, media_type: str, image_b64: str) -> str:
     return "\n".join(text_parts)
 
 
+def parse_receipt_json(response_text: str) -> dict[str, Any]:
+    """API レスポンスから JSON 部分を抽出してパースする。
+
+    Args:
+        response_text: モデルが返したテキスト。``{...}`` を含むことを期待する。
+
+    Returns:
+        ``date`` ``store`` ``amount`` ``category`` を含む dict。
+
+    Raises:
+        SystemExit: JSON が見つからない／パース失敗／必須キー欠如／型不正の場合。
+    """
+    match = JSON_OBJECT_PATTERN.search(response_text)
+    if not match:
+        logging.error("レスポンスに JSON が見つかりませんでした。生データ:\n%s", response_text)
+        raise SystemExit(1)
+
+    raw_json = match.group(0)
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        logging.error(
+            "JSON のパースに失敗しました: %s\n抽出文字列:\n%s\n生データ:\n%s",
+            exc,
+            raw_json,
+            response_text,
+        )
+        raise SystemExit(1) from exc
+
+    if not isinstance(data, dict):
+        logging.error("JSON のトップレベルが dict ではありません: %r", data)
+        raise SystemExit(1)
+
+    missing = [key for key in REQUIRED_KEYS if key not in data]
+    if missing:
+        logging.error("JSON に必須キーが不足しています: %s / data=%r", missing, data)
+        raise SystemExit(1)
+
+    if not isinstance(data["amount"], int) or isinstance(data["amount"], bool):
+        try:
+            data["amount"] = int(str(data["amount"]).replace(",", "").replace("円", "").strip())
+        except (TypeError, ValueError):
+            logging.error("amount を整数に変換できませんでした: %r", data["amount"])
+            raise SystemExit(1)
+
+    if data["category"] not in EXPENSE_CATEGORIES:
+        logging.error(
+            "勘定科目が5分類に含まれません: %r（許可: %s）",
+            data["category"],
+            ", ".join(EXPENSE_CATEGORIES),
+        )
+        raise SystemExit(1)
+
+    return data
+
+
 def main(argv: list[str]) -> int:
-    """エントリポイント。画像→API呼び出し→ログ出力までを実行する。
+    """エントリポイント。画像→API呼び出し→JSON構造化までを実行する。
 
     Args:
         argv: ``sys.argv[1:]`` 相当の引数リスト。
@@ -186,7 +253,10 @@ def main(argv: list[str]) -> int:
 
     response_text = call_vision_api(api_key, media_type, image_b64)
     logging.info("API レスポンス:\n%s", response_text)
-    # TODO: Step 3 で JSON 構造化、Step 4 で CSV 出力を追加する
+
+    receipt = parse_receipt_json(response_text)
+    logging.info("構造化結果: %s", receipt)
+    # TODO: Step 4 で CSV 出力を追加する
     return 0
 
 
