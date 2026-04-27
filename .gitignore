@@ -46,9 +46,12 @@ Thumbs.db
 output/
 *.csv
 
-# サンプルレシート画像（個人情報を含むため除外、README のみ追跡）
+# サンプルレシート画像（個人情報を含むため原則除外。Phase 1 デモ用の3枚のみ追跡）
 samples/*
 !samples/README.md
+!samples/receipt_001.jpg
+!samples/receipt_002.jpg
+!samples/receipt_003.jpg
 
 # ログファイル
 *.log
