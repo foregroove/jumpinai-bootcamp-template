@@ -47,9 +47,12 @@ output/
 *.csv
 
 # サンプルレシート画像（受講者個人のレシートが配置される想定のため誤 push を防止）
-# README.md だけを追跡対象にする
+# README.md と Phase 1 デモ用の3枚のみ追跡
 samples/*
 !samples/README.md
+!samples/receipt_001.jpg
+!samples/receipt_002.jpg
+!samples/receipt_003.jpg
 
 # ログファイル
 *.log
