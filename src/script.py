@@ -19,6 +19,11 @@ from typing import Any
 from anthropic import Anthropic, APIError
 from dotenv import load_dotenv
 
+# Windows コンソール (cp932) でも日本語ログが文字化けしないよう UTF-8 を強制
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
